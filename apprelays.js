@@ -1115,6 +1115,13 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
     obj.close = function (arg) {
         if (obj.ws == null) return;
 
+        // sending job to update session status to completed
+        // start
+        const { publishQueueJob } = require('./queueHelper');
+        const sessionid = obj.ws;
+        publishQueueJob(sessionid, 2); 
+        // end 
+
         // Event the session ending
         if ((obj.startTime) && (obj.meshid != null)) {
             // Collect how many raw bytes where received and sent.
@@ -1198,7 +1205,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
                     // sending job to update session status to completed
                     // start
                     const { publishQueueJob } = require('./queueHelper');
-                    const sessionid = req.query.ws;
+                    const sessionid = obj.ws;
                     publishQueueJob(sessionid, 2); 
                     // end 
                     parent.parent.debug('relay', 'RDP: Relay websocket closed'); obj.close(); 
@@ -1268,7 +1275,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
                 // sending job to update session status to completed
                 // start
                 const { publishQueueJob } = require('./queueHelper');
-                const sessionid = req.query.ws;
+                const sessionid = obj.ws;
                 publishQueueJob(sessionid, 2); 
                 // end 
             }).on('error', function (err) {
@@ -1450,7 +1457,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
         // sending job to update session status to completed
         // start
         const { publishQueueJob } = require('./queueHelper');
-        const sessionid = req.query.ws;
+        const sessionid = obj.ws;
         publishQueueJob(sessionid, 2); 
         // end 
     });
