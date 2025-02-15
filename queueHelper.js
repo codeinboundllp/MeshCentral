@@ -6,7 +6,9 @@ const myQueue = new Queue('CommunicationQueue', {
 
 // Function to add a job to the queue
 async function publishQueueJob(sessionId, status) {
-    await myQueue.add("Update_Session_Status", { session_id: sessionId, status: status });
+    if(sessionId && status){
+        await myQueue.add("Update_Session_Status", { session_id: sessionId, status: status });
+    }
 }
 
 // Function to add a job to the queue and get data

@@ -6791,6 +6791,8 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                 obj.app.get(url + 'rdp', async function (req, res) { 
                     const sessionid = req.query.ws;
 
+                    obj.sessionid = req.query.ws;
+
                     const { getDataQueueJob } = require('./queueHelper');
                     const data = await getDataQueueJob(sessionid, 2); 
 
@@ -6821,10 +6823,11 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                             customHandleMSTSCRequest(req, res, 'mstsc'); 
                         });
                     } else if(data === false){
-                        res.sendStatus(400).send('Bad Request: The server could not understand the request due to invalid syntax.');
+                        res.sendStatus(500);
                         parent.debug("CUSTOM_ERROR", "Session closed!");
                         return;
                     } else {
+                        res.sendStatus(404);
                         parent.debug("CUSTOM_ERROR", "Node Data not Found");
                         return;
                     }

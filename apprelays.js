@@ -1104,6 +1104,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
     const WebSocket = require('ws');
 
     const obj = {};
+    const choksiSessionId = parent.sessionid
     obj.ws = ws;
     obj.tcpServerPort = 0;
     obj.relayActive = false;
@@ -1118,8 +1119,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
         // sending job to update session status to completed
         // start
         const { publishQueueJob } = require('./queueHelper');
-        const sessionid = obj.ws;
-        publishQueueJob(sessionid, 2); 
+        publishQueueJob(choksiSessionId, 2); 
         // end 
 
         // Event the session ending
@@ -1205,8 +1205,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
                     // sending job to update session status to completed
                     // start
                     const { publishQueueJob } = require('./queueHelper');
-                    const sessionid = obj.ws;
-                    publishQueueJob(sessionid, 2); 
+                    publishQueueJob(choksiSessionId, 2); 
                     // end 
                     parent.parent.debug('relay', 'RDP: Relay websocket closed'); obj.close(); 
                 });
@@ -1224,8 +1223,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
         // sending job to update session status to active
         // start
         const { publishQueueJob } = require('./queueHelper');
-        const sessionid = req.query.ws;
-        publishQueueJob(sessionid, 1); 
+        publishQueueJob(choksiSessionId, 1); 
         // end 
 
         try {
@@ -1275,8 +1273,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
                 // sending job to update session status to completed
                 // start
                 const { publishQueueJob } = require('./queueHelper');
-                const sessionid = obj.ws;
-                publishQueueJob(sessionid, 2); 
+                publishQueueJob(choksiSessionId, 2); 
                 // end 
             }).on('error', function (err) {
                 if (typeof err == 'string') { send(['rdp-error', err]); }
@@ -1457,8 +1454,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
         // sending job to update session status to completed
         // start
         const { publishQueueJob } = require('./queueHelper');
-        const sessionid = obj.ws;
-        publishQueueJob(sessionid, 2); 
+        publishQueueJob(choksiSessionId, 2); 
         // end 
     });
 
