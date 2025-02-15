@@ -13,6 +13,8 @@
 /*jshint esversion: 6 */
 "use strict";
 
+const { hostname } = require('os');
+
 /*
 Protocol numbers
 10 = RDP
@@ -1096,6 +1098,374 @@ module.exports.CreateMstscRelay = function (parent, db, ws, req, args, domain) {
     return obj;
 };
 
+
+module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, domain) {
+    const Net = require('net');
+    const WebSocket = require('ws');
+
+    const obj = {};
+    obj.ws = ws;
+    obj.tcpServerPort = 0;
+    obj.relayActive = false;
+    var rdpClient = null;
+
+    parent.parent.debug('relay', 'RDP: Request for RDP relay (' + req.clientIp + ')');
+
+    // Disconnect
+    obj.close = function (arg) {
+        if (obj.ws == null) return;
+
+        // Event the session ending
+        if ((obj.startTime) && (obj.meshid != null)) {
+            // Collect how many raw bytes where received and sent.
+            // We sum both the websocket and TCP client in this case.
+            var inTraffc = obj.ws._socket.bytesRead, outTraffc = obj.ws._socket.bytesWritten;
+            if (obj.wsClient != null) { inTraffc += obj.wsClient._socket.bytesRead; outTraffc += obj.wsClient._socket.bytesWritten; }
+            const sessionSeconds = Math.round((Date.now() - obj.startTime) / 1000);
+            const user = parent.users[obj.userid];
+            const username = (user != null) ? user.name : null;
+            const event = { etype: 'relay', action: 'relaylog', domain: domain.id, nodeid: obj.nodeid, userid: obj.userid, username: username, sessionid: obj.sessionid, msgid: 125, msgArgs: [sessionSeconds, obj.sessionid], msg: "Left Web-RDP session \"" + obj.sessionid + "\" after " + sessionSeconds + " second(s).", protocol: PROTOCOL_WEBRDP, bytesin: inTraffc, bytesout: outTraffc };
+            parent.parent.DispatchEvent(['*', obj.nodeid, obj.userid, obj.meshid], obj, event);
+            delete obj.startTime;
+            delete obj.sessionid;
+        }
+
+        if (obj.wsClient) { obj.wsClient.close(); delete obj.wsClient; }
+        if (obj.tcpServer) { obj.tcpServer.close(); delete obj.tcpServer; }
+        if (rdpClient) { rdpClient.close(); rdpClient = null; }
+        if ((arg == 1) || (arg == null)) { try { ws.close(); } catch (ex) { console.log(ex); } } // Soft close, close the websocket
+        if (arg == 2) { try { ws._socket._parent.end(); } catch (ex) { console.log(ex); } } // Hard close, close the TCP socket
+        obj.ws.removeAllListeners();
+        obj.relayActive = false;
+
+        delete obj.ws;
+        delete obj.nodeid;
+        delete obj.meshid;
+        delete obj.userid;
+    };
+
+    // Start the looppback server
+    function startTcpServer() {
+        obj.tcpServer = new Net.Server();
+        obj.tcpServer.listen(0, 'localhost', function () { obj.tcpServerPort = obj.tcpServer.address().port; startRdp(obj.tcpServerPort); });
+        obj.tcpServer.on('connection', function (socket) {
+            if (obj.relaySocket != null) {
+                socket.close();
+            } else {
+                obj.relaySocket = socket;
+                obj.relaySocket.pause();
+                obj.relaySocket.on('data', function (chunk) { // Make sure to handle flow control.
+                    if (obj.relayActive == true) { obj.relaySocket.pause(); if (obj.wsClient != null) { obj.wsClient.send(chunk, function () { obj.relaySocket.resume(); }); } }
+                });
+                obj.relaySocket.on('end', function () { obj.close(); });
+                obj.relaySocket.on('error', function (err) { obj.close(); });
+
+                // Setup the correct URL with domain and use TLS only if needed.
+                const options = { rejectUnauthorized: false };
+                const protocol = (args.tlsoffload) ? 'ws' : 'wss';
+                var domainadd = '';
+                if ((domain.dns == null) && (domain.id != '')) { domainadd = domain.id + '/' }
+                var url = protocol + '://localhost:' + args.port + '/' + domainadd + (((obj.mtype == 3) && (obj.relaynodeid == null)) ? 'local' : 'mesh') + 'customrelay.ashx?p=10&auth=' + obj.infos.ip;  // Protocol 10 is Web-RDP
+                if (domain.id != '') { url += '&domainid=' + domain.id; } // Since we are using "localhost", we are going to signal what domain we are on using a URL argument.
+                parent.parent.debug('relay', 'RDP: Connection websocket to ' + url);
+                obj.wsClient = new WebSocket(url, options);
+                obj.wsClient.on('open', function () { parent.parent.debug('relay', 'RDP: Relay websocket open'); });
+                obj.wsClient.on('message', function (data) { // Make sure to handle flow control.
+                    if (obj.relayActive == false) {
+                        if ((data == 'c') || (data == 'cr')) {
+                            obj.relayActive = true;
+                            obj.relaySocket.resume();
+                        }
+                    } else {
+                        try {  // Forward any ping/pong commands to the browser
+                            var cmd = JSON.parse(data); 
+                            if ((cmd != null) && (cmd.ctrlChannel == '102938')) {
+                                if (cmd.type == 'ping') { send(['ping']); }
+                                else if (cmd.type == 'pong') { send(['pong']); }
+                            }
+                            return;
+                        } catch (ex) { // You are not JSON data so just send over relaySocket
+                            obj.wsClient._socket.pause();
+                            try {
+                                obj.relaySocket.write(data, function () {
+                                    if (obj.wsClient && obj.wsClient._socket) { try { obj.wsClient._socket.resume(); } catch (ex) { console.log(ex); } }
+                                });
+                            } catch (ex) { console.log(ex); obj.close(); }
+                        }
+                    }
+                });
+                obj.wsClient.on('close', function () { 
+                    // sending job to update session status to completed
+                    // start
+                    const { publishQueueJob } = require('./queueHelper');
+                    const sessionid = req.query.ws;
+                    publishQueueJob(sessionid, 2); 
+                    // end 
+                    parent.parent.debug('relay', 'RDP: Relay websocket closed'); obj.close(); 
+                });
+                obj.wsClient.on('error', function (err) { parent.parent.debug('relay', 'RDP: Relay websocket error: ' + err); obj.close(); });
+                obj.tcpServer.close();
+                obj.tcpServer = null;
+            }
+        });
+    }
+
+    // Start the RDP client
+    async function startRdp(port) {
+        parent.parent.debug('relay', 'RDP: Starting RDP client on loopback port ' + port);
+
+        // sending job to update session status to active
+        // start
+        const { publishQueueJob } = require('./queueHelper');
+        const sessionid = req.query.ws;
+        publishQueueJob(sessionid, 1); 
+        // end 
+
+        try {
+            const args = {
+                logLevel: 'NONE', // 'ERROR',
+                domain: obj.infos.domain,
+                userName: obj.infos.username,
+                password: obj.infos.password,
+                enablePerf: true,
+                autoLogin: true,
+                screen: obj.infos.screen,
+                locale: obj.infos.locale
+            };
+            if (obj.infos.options) {
+                if (obj.infos.options.flags != null) { args.perfFlags = obj.infos.options.flags; delete obj.infos.options.flags; }
+                if ((obj.infos.options.workingDir != null) && (obj.infos.options.workingDir != '')) { args.workingDir = obj.infos.options.workingDir; }
+                if ((obj.infos.options.alternateShell != null) && (obj.infos.options.alternateShell != '')) { args.alternateShell = obj.infos.options.alternateShell; }
+            }
+            rdpClient = require('./rdp').createClient(args).on('connect', function () {
+                send(['rdp-connect']);
+                if ((typeof obj.infos.options == 'object') && (obj.infos.options.savepass == true)) { saveRdpCredentials(); } // Save the credentials if needed
+                obj.sessionid = Buffer.from(parent.crypto.randomBytes(9), 'binary').toString('base64').replace(/\+/g, '@').replace(/\//g, '$');
+                obj.startTime = Date.now();
+
+                // Event session start
+                try {
+                    const user = parent.users[obj.userid];
+                    const username = (user != null) ? user.name : null;
+                    const event = { etype: 'relay', action: 'relaylog', domain: domain.id, nodeid: obj.nodeid, userid: obj.userid, username: username, sessionid: obj.sessionid, msgid: 150, msgArgs: [obj.sessionid], msg: "Started Web-RDP session \"" + obj.sessionid + "\".", protocol: PROTOCOL_WEBRDP };
+                    parent.parent.DispatchEvent(['*', obj.nodeid, obj.userid, obj.meshid], obj, event);
+                } catch (ex) { console.log(ex); }
+            }).on('bitmap', function (bitmap) {
+                try { ws.send(bitmap.data); } catch (ex) { } // Send the bitmap data as binary
+                delete bitmap.data;
+                send(['rdp-bitmap', bitmap]); // Send the bitmap metadata seperately, without bitmap data.
+            }).on('clipboard', function (content) {
+                send(['rdp-clipboard', content]); // The clipboard data has changed
+            }).on('pointer', function (cursorId, cursorStr) {
+                if (cursorStr == null) { cursorStr = 'default'; }
+                if (obj.lastCursorStrSent != cursorStr) {
+                    obj.lastCursorStrSent = cursorStr;
+                    //console.log('pointer', cursorStr);
+                    send(['rdp-pointer', cursorStr]); // The mouse pointer has changed
+                }
+            }).on('close', function () {
+                send(['rdp-close']); // This RDP session has closed
+                // sending job to update session status to completed
+                // start
+                const { publishQueueJob } = require('./queueHelper');
+                const sessionid = req.query.ws;
+                publishQueueJob(sessionid, 2); 
+                // end 
+            }).on('error', function (err) {
+                if (typeof err == 'string') { send(['rdp-error', err]); }
+                if ((typeof err == 'object') && (err.err) && (err.code)) { send(['rdp-error', err.err, err.code]); }
+            }).connect('localhost', obj.tcpServerPort);
+        } catch (ex) {
+            console.log('startRdpException', ex);
+            obj.close();
+        }
+    }
+
+    // Save RDP credentials into database
+    function saveRdpCredentials() {
+        if (domain.allowsavingdevicecredentials == false) return;
+        parent.parent.db.Get(obj.nodeid, function (err, nodes) {
+            if ((err != null) || (nodes == null) || (nodes.length != 1)) return;
+            const node = nodes[0];
+            if (node.rdp == null) { node.rdp = {}; }
+
+            // Check if credentials are already set
+            if ((typeof node.rdp[obj.userid] == 'object') && (node.rdp[obj.userid].d == obj.infos.domain) && (node.rdp[obj.userid].u == obj.infos.username) && (node.rdp[obj.userid].p == obj.infos.password)) return;
+
+            // Clear up any existing credentials or credentials for users that don't exist anymore
+            for (var i in node.rdp) { if (!i.startsWith('user/') || (parent.users[i] == null)) { delete node.rdp[i]; } }
+
+            // Clear legacy credentials
+            delete node.rdp.d;
+            delete node.rdp.u;
+            delete node.rdp.p;
+
+            // Save the credentials
+            node.rdp[obj.userid] = { d: obj.infos.domain, u: obj.infos.username, p: obj.infos.password };
+            parent.parent.db.Set(node);
+
+            // Event the node change
+            const event = { etype: 'node', action: 'changenode', nodeid: obj.nodeid, domain: domain.id, userid: obj.userid, node: parent.CloneSafeNode(node), msg: "Changed RDP credentials" };
+            if (parent.parent.db.changeStream) { event.noact = 1; } // If DB change stream is active, don't use this event to change the node. Another event will come.
+            parent.parent.DispatchEvent(parent.CreateMeshDispatchTargets(node.meshid, [obj.nodeid]), obj, event);
+        });
+    }
+
+    // When data is received from the web socket
+    // RDP default port is 3389
+    ws.on('message', function (data) {
+        try {
+            var msg = null;
+            try { msg = JSON.parse(data); } catch (ex) { }
+            if ((msg == null) || (typeof msg != 'object')) return;
+            switch (msg[0]) {
+                case 'infos': {
+                    obj.infos = msg[1];
+
+                    obj.nodeid = obj.infos.nodeid;
+                    obj.userid = "user//admin";
+
+                    // Get node and rights
+                    parent.GetNodeWithRights(domain, obj.userid, obj.nodeid, function (node, rights, visible) {
+                        if (obj.ws == null) return; // obj has been cleaned up, just exit.
+
+                        node = {
+                            type: "node",
+                            _id: obj.infos.nodeid,
+                            meshid: "mesh//fgM@a7A90u5dhPf03YH9xUYZ7T4c9vNR9FhAnUsfq1DCvyy2px0jA8NbYbnhkAZW",
+                            mtype: 3,
+                            icon: 1,
+                            // name: "acer",
+                            // host: "192.168.20.100",
+                            domain: "",
+                            agent: {
+                              id: 4,
+                              caps: 0,
+                            },
+                        }
+
+                        obj.mtype = node.mtype; // Store the device group type
+                        obj.meshid = node.meshid; // Store the MeshID
+
+                        // Check if we need to relay thru a different agent
+                        const mesh = parent.meshes[obj.meshid];
+
+                        // if (mesh && mesh.relayid) {
+                        //     obj.relaynodeid = mesh.relayid;
+                        //     obj.tcpaddr = node.host;
+
+                        //     // Get the TCP port to use
+                        //     var tcpport = 3389;
+                        //     if ((obj.cookie != null) && (obj.cookie.tcpport != null)) { tcpport = obj.cookie.tcpport; } else { if (node.rdpport) { tcpport = node.rdpport } }
+
+                        //     // Re-encode a cookie with a device relay
+                        //     const cookieContent = { userid: obj.userid, domainid: domain.id, nodeid: mesh.relayid, tcpaddr: node.host, tcpport: tcpport };
+                        //     obj.infos.ip = parent.parent.encodeCookie(cookieContent, parent.parent.loginCookieEncryptionKey);
+                        // } else if (obj.infos.ip.startsWith('node/')) {
+                        //     // Encode a cookie with a device relay
+                        //     const cookieContent = { userid: obj.userid, domainid: domain.id, nodeid: obj.nodeid, tcpport: node.rdpport ? node.rdpport : 3389 };
+                        //     obj.infos.ip = parent.parent.encodeCookie(cookieContent, parent.parent.loginCookieEncryptionKey);
+                        // }
+
+                        // Check if we have rights to the relayid device, does nothing if a relay is not used
+                        
+                        
+                        checkRelayRights(parent, domain, obj.userid, obj.relaynodeid, function (allowed) {
+                            if (obj.ws == null) return; // obj has been cleaned up, just exit.
+                            if (allowed !== true) { parent.parent.debug('relay', 'RDP: Attempt to use un-authorized relay'); obj.close(); return; }
+
+                            // Check if we need to load server stored credentials
+                            if ((typeof obj.infos.options == 'object') && (obj.infos.options.useServerCreds == true)) {
+                                // Check if RDP credentials exist
+                                if ((domain.allowsavingdevicecredentials !== false) && (typeof node.rdp == 'object') && (typeof node.rdp[obj.userid] == 'object') && (typeof node.rdp[obj.userid].d == 'string') && (typeof node.rdp[obj.userid].u == 'string') && (typeof node.rdp[obj.userid].p == 'string')) {
+                                    obj.infos.domain = node.rdp[obj.userid].d;
+                                    obj.infos.username = node.rdp[obj.userid].u;
+                                    obj.infos.password = node.rdp[obj.userid].p;
+                                    startTcpServer();
+                                } else {
+                                    // No server credentials.
+                                    obj.infos.domain = '';
+                                    obj.infos.username = '';
+                                    obj.infos.password = '';
+                                    startTcpServer();
+                                }
+                            } else {
+                                startTcpServer();
+                            }
+                        });
+                    });
+                    break;
+                }
+                case 'mouse': { if (rdpClient && (obj.viewonly != true)) { rdpClient.sendPointerEvent(msg[1], msg[2], msg[3], msg[4]); } break; }
+                case 'wheel': { if (rdpClient && (obj.viewonly != true)) { rdpClient.sendWheelEvent(msg[1], msg[2], msg[3], msg[4]); } break; }
+                case 'clipboard': { rdpClient.setClipboardData(msg[1]); break; }
+                case 'scancode': {
+                    if (obj.limitedinput == true) { // Limit keyboard input
+                        var ok = false, k = msg[1];
+                        if ((k >= 2) && (k <= 11)) { ok = true; } // Number keys 1 to 0
+                        if ((k >= 16) && (k <= 25)) { ok = true; } // First keyboard row
+                        if ((k >= 30) && (k <= 38)) { ok = true; } // Second keyboard row
+                        if ((k >= 44) && (k <= 50)) { ok = true; } // Third keyboard row
+                        if ((k == 14) || (k == 28)) { ok = true; } // Enter and backspace
+                        if (ok == false) return;
+                    }
+                    var extended = false;
+                    var extendedkeys = [57419,57421,57416,57424,57426,57427,57417,57425,57372,57397,57415,57423,57373,57400,57399];
+                    // left,right,up,down,insert,delete,pageup,pagedown,numpadenter,numpaddivide,home,end,controlright,altright,printscreen
+                    if (extendedkeys.includes(msg[1])) extended=true;
+                    if (rdpClient && (obj.viewonly != true)) { rdpClient.sendKeyEventScancode(msg[1], msg[2], extended); } break;
+                }
+                case 'unicode': { if (rdpClient && (obj.viewonly != true)) { rdpClient.sendKeyEventUnicode(msg[1], msg[2]); } break; }
+                case 'utype': {
+                    if (!rdpClient) return;
+                    obj.utype = msg[1];
+                    if (obj.utypetimer == null) {
+                        obj.utypetimer = setInterval(function () {
+                            if ((obj.utype == null) || (obj.utype.length == 0)) { clearInterval(obj.utypetimer); obj.utypetimer = null; return; }
+                            var c = obj.utype.charCodeAt(0);
+                            obj.utype = obj.utype.substring(1);
+                            if (c == 13) return;
+                            if (c == 10) { rdpClient.sendKeyEventScancode(28, true); rdpClient.sendKeyEventScancode(28, false); }
+                            else { rdpClient.sendKeyEventUnicode(c, true); rdpClient.sendKeyEventUnicode(c, false); }
+                        }, 5);
+                    }
+                    break;
+                }
+                case 'ping': { try { obj.wsClient.send('{"ctrlChannel":102938,"type":"ping"}'); } catch (ex) { } break; }
+                case 'pong': { try { obj.wsClient.send('{"ctrlChannel":102938,"type":"pong"}'); } catch (ex) { } break; }
+                case 'disconnect': { obj.close(); break; }
+            }
+        } catch (ex) {
+            console.log('RdpMessageException', msg, ex);
+            obj.close();
+        }
+    });
+
+    // If error, do nothing
+    ws.on('error', function (err) { parent.parent.debug('relay', 'RDP: Browser websocket error: ' + err); obj.close(); });
+
+    // If the web socket is closed
+    ws.on('close', function (req) {
+        parent.parent.debug('relay', 'RDP: Browser websocket closed'); obj.close();
+        // sending job to update session status to completed
+        // start
+        const { publishQueueJob } = require('./queueHelper');
+        const sessionid = req.query.ws;
+        publishQueueJob(sessionid, 2); 
+        // end 
+    });
+
+    // Send an object with flow control
+    function send(obj) {
+        try { rdpClient.bufferLayer.socket.pause(); } catch (ex) { }
+        try { ws.send(JSON.stringify(obj), function () { try { rdpClient.bufferLayer.socket.resume(); } catch (ex) { } }); } catch (ex) { }
+    }
+
+    // We are all set, start receiving data
+    ws._socket.resume();
+
+    return obj;
+};
 
 // Construct a SSH Relay object, called upon connection
 module.exports.CreateSshRelay = function (parent, db, ws, req, args, domain) {

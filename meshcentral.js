@@ -4152,7 +4152,7 @@ function mainStart() {
 
     // If running within the node_modules folder, move working directory to the parent of the node_modules folder.
     if (__dirname.endsWith('\\node_modules\\meshcentral') || __dirname.endsWith('/node_modules/meshcentral')) { process.chdir(require('path').join(__dirname, '..', '..')); }
-
+    
     // Check for any missing modules.
     InstallModules(['minimist'], {}, function () {
         // Parse inbound arguments

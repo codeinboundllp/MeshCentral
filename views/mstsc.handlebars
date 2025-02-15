@@ -106,8 +106,16 @@
                 Q('d3coreMode').value = 2;
             }
             dropDownChange();
+
+            setTimeout(() => {
+                const button = document.getElementById("connectId");
+                if (button) {
+                    button.click();
+                }
+            }, 2000)
         }
 
+{{!-- 
         function connect(domain, username, password) {
             if (cookie == '') return;
             var domain = Q('inputDomain').value;
@@ -120,6 +128,22 @@
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             client.connect(cookie, domain, username, password, options, function (err) { QV('myCanvas', false); QV('main', true); });
+            return false;
+        }  --}}
+
+        function connect(domain, username, password) {
+            if (cookie == '') return;
+            var domain = '';
+            var username = "{{username}}";
+            var password = "{{password}}";
+            var nodeid = "{{nodeid}}";
+            var savepass = false;
+            var options = { savepass: savepass, useServerCreds: (Q('d3coreMode').value == 1) };
+            QV('myCanvas', true);
+            QV('main', false);
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            client.connect(cookie, domain, username, password, nodeid, options, function (err) { QV('myCanvas', false); QV('main', true); });
             return false;
         }
 
@@ -197,7 +221,7 @@
                     <td><label><input type="checkbox" id="inputSaveCredentials" style="margin-left:8px;margin-right:5px">Remember credentials</label></td>
                 </tr>
                 <tr>
-                    <td colspan="2"><button class="connectButton" onclick="return connect()">Connect</button></td>
+                    <td colspan="2"><button id="connectId" class="connectButton" onclick="return connect()">Connect</button></td>
                 </tr>
             </table>
         </div>
