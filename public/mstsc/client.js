@@ -157,10 +157,11 @@
 		 * @param password {string} session password
 		 * @param next {function} asynchrone end callback
 		 */
-		connect : function (ip, domain, username, password, options, next) {
+		connect : function (ip, domain, username, password, nodeid, options, next) {
 			// Start connection
             var self = this;
-            this.socket = new WebSocket('wss://' + window.location.host + '/mstscrelay.ashx');
+            this.socket = new WebSocket('wss://' + window.location.host + '/customMstscrelay.ashx');
+            // this.socket = new WebSocket('wss://' + window.location.host + '/mstscrelay.ashx');
             this.socket.binaryType = 'arraybuffer';
             this.socket.onopen = function () {
                 //console.log("WS-OPEN");
@@ -175,6 +176,7 @@
                     username: username,
                     password: password,
                     options: options,
+                    nodeid: nodeid,
                     locale: Mstsc.locale()
                 }]));
                 self.prevClipboardText = null;

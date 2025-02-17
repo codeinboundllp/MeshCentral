@@ -1332,3 +1332,215 @@ function CreateLocalRelayEx(parent, ws, req, domain, user, cookie) {
     performRelay();
     return obj;
 };
+
+module.exports.CreateCustomLocalRelay = function (parent, ws, req, domain, user, cookie) {
+    CustomCreateLocalRelayEx(parent, ws, req, domain, user, cookie);
+}
+
+function CustomCreateLocalRelayEx(parent, ws, req, domain, user, cookie) {
+    const net = require('net');
+    var obj = {};
+    obj.id = parent.crypto.randomBytes(9).toString('base64').replace(/\+/g, '@').replace(/\//g, '$');
+    obj.req = req;
+    obj.ws = ws;
+    obj.user = user;
+
+    // Check the protocol in use
+    var protocolInUse = parseInt(req.query.p);
+    if (typeof protocolInUse != 'number') { protocolInUse = 0; }
+
+    // If there is no authentication, drop this connection
+    if (obj.user == null) { try { ws.close(); parent.parent.debug('relay', 'LocalRelay: Connection with no authentication'); } catch (e) { console.log(e); } return; }
+
+    // Use cookie values when present
+    if (cookie != null) {
+        if (cookie.nodeid) { req.query.nodeid = cookie.nodeid; }
+        if (cookie.tcpport) { req.query.tcpport = cookie.tcpport; }
+    }
+
+    // Check for nodeid and tcpport
+    // if ((req.query == null) || (req.query.nodeid == null) || (req.query.tcpport == null)) { try { ws.close(); parent.parent.debug('relay', 'LocalRelay: Connection with invalid arguments'); } catch (e) { console.log(e); } return; }
+    // const tcpport = parseInt(req.query.tcpport);
+    // if ((typeof tcpport != 'number') || (tcpport < 1) || (tcpport > 65535)) { try { ws.close(); parent.parent.debug('relay', 'LocalRelay: Connection with invalid arguments'); } catch (e) { console.log(e); } return; }
+    // var nodeidsplit = req.query.nodeid.split('/');
+    // if ((nodeidsplit.length != 3) || (nodeidsplit[0] != 'node') || (nodeidsplit[1] != domain.id) || (nodeidsplit[2].length < 10)) { try { ws.close(); parent.parent.debug('relay', 'LocalRelay: Connection with invalid arguments'); } catch (e) { console.log(e); } return; }
+    // obj.nodeid = "node//gDng9U89yYDLWIKa40DvI2@QovP0mURCPjCMEEmkEOWNfVppUnyKQ36tik81d@tu";
+    obj.nodeid = parent.nodeid;
+    obj.tcpport = 3389;
+
+    // Relay session count (we may remove this in the future)
+    obj.relaySessionCounted = true;
+    parent.relaySessionCount++;
+
+    // Setup slow relay is requested. This will show down sending any data to this peer.
+    if ((req.query.slowrelay != null)) {
+        var sr = null;
+        try { sr = parseInt(req.query.slowrelay); } catch (ex) { }
+        if ((typeof sr == 'number') && (sr > 0) && (sr < 1000)) { obj.ws.slowRelay = sr; }
+    }
+
+    // Hold traffic until we connect to the target
+    ws._socket.pause();
+    ws._socket.bytesReadEx = 0;
+    ws._socket.bytesWrittenEx = 0;
+
+    // Mesh Rights
+    const MESHRIGHT_EDITMESH = 1;
+    const MESHRIGHT_MANAGEUSERS = 2;
+    const MESHRIGHT_MANAGECOMPUTERS = 4;
+    const MESHRIGHT_REMOTECONTROL = 8;
+    const MESHRIGHT_AGENTCONSOLE = 16;
+    const MESHRIGHT_SERVERFILES = 32;
+    const MESHRIGHT_WAKEDEVICE = 64;
+    const MESHRIGHT_SETNOTES = 128;
+    const MESHRIGHT_REMOTEVIEW = 256;
+
+    // Site rights
+    const SITERIGHT_SERVERBACKUP = 1;
+    const SITERIGHT_MANAGEUSERS = 2;
+    const SITERIGHT_SERVERRESTORE = 4;
+    const SITERIGHT_FILEACCESS = 8;
+    const SITERIGHT_SERVERUPDATE = 16;
+    const SITERIGHT_LOCKED = 32;
+
+    // Clean a IPv6 address that encodes a IPv4 address
+    function cleanRemoteAddr(addr) { if (addr.startsWith('::ffff:')) { return addr.substring(7); } else { return addr; } }
+
+    // Perform data accounting
+    function dataAccounting() {
+        const datain = ((obj.client.bytesRead - obj.client.bytesReadEx) + (ws._socket.bytesRead - ws._socket.bytesReadEx));
+        const dataout = ((obj.client.bytesWritten - obj.client.bytesWrittenEx) + (ws._socket.bytesWritten - ws._socket.bytesWrittenEx));
+        obj.client.bytesReadEx = obj.client.bytesRead;
+        obj.client.bytesWrittenEx = obj.client.bytesWritten;
+        ws._socket.bytesReadEx = ws._socket.bytesRead;
+        ws._socket.bytesWrittenEx = ws._socket.bytesWritten;
+
+        // Add to counters
+        if (parent.trafficStats.localRelayIn[protocolInUse]) { parent.trafficStats.localRelayIn[protocolInUse] += datain; } else { parent.trafficStats.localRelayIn[protocolInUse] = datain; }
+        if (parent.trafficStats.localRelayOut[protocolInUse]) { parent.trafficStats.localRelayOut[protocolInUse] += dataout; } else { parent.trafficStats.localRelayOut[protocolInUse] = dataout; }
+    }
+
+    // Disconnect
+    obj.close = function (arg) {
+        // If the web socket is already closed, stop here.
+        if (obj.ws == null) return;
+
+        // Perform data accounting
+        dataAccounting();
+
+        // Collect how many raw bytes where received and sent.
+        // We sum both the websocket and TCP client in this case.
+        var inTraffc = obj.ws._socket.bytesRead, outTraffc = obj.ws._socket.bytesWritten;
+        if (obj.client != null) { inTraffc += obj.client.bytesRead; outTraffc += obj.client.bytesWritten; }
+
+        // Close the web socket
+        if ((arg == 1) || (arg == null)) { try { obj.ws.close(); parent.parent.debug('relay', 'LocalRelay: Soft disconnect'); } catch (e) { console.log(e); } } // Soft close, close the websocket
+        if (arg == 2) { try { obj.ws._socket._parent.end(); parent.parent.debug('relay', 'LocalRelay: Hard disconnect'); } catch (e) { console.log(e); } } // Hard close, close the TCP socket
+
+        // Update the relay session count
+        if (obj.relaySessionCounted) { parent.relaySessionCount--; delete obj.relaySessionCounted; }
+
+        // Log the disconnection, traffic will be credited to the authenticated user
+        if (obj.time) {
+            var protocolStr = req.query.p;
+            if (req.query.p == 10) { protocolStr = 'RDP'; }
+            else if (req.query.p == 11) { protocolStr = 'SSH-TERM'; }
+            else if (req.query.p == 12) { protocolStr = 'VNC'; }
+            else if (req.query.p == 13) { protocolStr = 'SSH-FILES'; }
+            else if (req.query.p == 14) { protocolStr = 'Web-TCP'; }
+            var event = { etype: 'relay', action: 'relaylog', domain: domain.id, userid: obj.user._id, username: obj.user.name, msgid: 121, msgArgs: [obj.id, protocolStr, obj.host, Math.floor((Date.now() - obj.time) / 1000)], msg: 'Ended local relay session \"' + obj.id + '\", protocol ' + protocolStr + ' to ' + obj.host + ', ' + Math.floor((Date.now() - obj.time) / 1000) + ' second(s)', nodeid: obj.req.query.nodeid, protocol: req.query.p, in: inTraffc, out: outTraffc };
+            if (obj.guestname) { event.guestname = obj.guestname; } // If this is a sharing session, set the guest name here.
+            parent.parent.DispatchEvent(['*', user._id], obj, event);
+        }
+
+        // Aggressive cleanup
+        delete obj.ws;
+        delete obj.req;
+        delete obj.time;
+        delete obj.nodeid;
+        delete obj.meshid;
+        delete obj.tcpport;
+        if (obj.expireTimer != null) { clearTimeout(obj.expireTimer); delete obj.expireTimer; }
+        if (obj.client != null) { obj.client.destroy(); delete obj.client; } // Close the client socket
+        if (obj.pingtimer != null) { clearInterval(obj.pingtimer); delete obj.pingtimer; }
+        if (obj.pongtimer != null) { clearInterval(obj.pongtimer); delete obj.pongtimer; }
+
+        // Unsubscribe
+        if (obj.pid != null) { parent.parent.RemoveAllEventDispatch(obj); }
+    };
+
+    // Send a PING/PONG message
+    function sendPing() { try { obj.ws.send('{"ctrlChannel":"102938","type":"ping"}'); } catch (ex) { } }
+    function sendPong() { try { obj.ws.send('{"ctrlChannel":"102938","type":"pong"}'); } catch (ex) { } }
+
+    function performRelay() {
+        ws._socket.setKeepAlive(true, 240000); // Set TCP keep alive
+
+        // Setup the agent PING/PONG timers unless requested not to
+        if (obj.req.query.noping != 1) {
+            if ((typeof parent.parent.args.agentping == 'number') && (obj.pingtimer == null)) { obj.pingtimer = setInterval(sendPing, parent.parent.args.agentping * 1000); }
+            else if ((typeof parent.parent.args.agentpong == 'number') && (obj.pongtimer == null)) { obj.pongtimer = setInterval(sendPong, parent.parent.args.agentpong * 1000); }
+        }
+
+        parent.db.Get(obj.nodeid, function (err, docs) {
+            if ((err != null) || (docs == null) || (docs.length != 1)) { try { obj.close(); } catch (e) { } return; } // Disconnect websocket
+            const node = docs[0];
+            obj.host = node.host;
+            obj.meshid = node.meshid;
+
+            // Check if this user has permission to relay thru this computer (MESHRIGHT_REMOTECONTROL or MESHRIGHT_RELAY rights)
+            if ((parent.GetNodeRights(obj.user, node.meshid, node._id) & 0x00200008) == 0) { console.log('ERR: Access denied (2)'); try { obj.close(); } catch (ex) { } return; }
+
+            // Setup TCP client
+            obj.client = new net.Socket();
+            obj.client.bytesReadEx = 0;
+            obj.client.bytesWrittenEx = 0;
+            obj.client.connect(obj.tcpport, node.host, function () {
+                // Log the start of the connection
+                var protocolStr = req.query.p;
+                if (req.query.p == 10) { protocolStr = 'RDP'; }
+                else if (req.query.p == 11) { protocolStr = 'SSH-TERM'; }
+                else if (req.query.p == 12) { protocolStr = 'VNC'; }
+                else if (req.query.p == 13) { protocolStr = 'SSH-FILES'; }
+                else if (req.query.p == 14) { protocolStr = 'Web-TCP'; }
+                obj.time = Date.now();
+                var event = { etype: 'relay', action: 'relaylog', domain: domain.id, userid: obj.user._id, username: obj.user.name, msgid: 120, msgArgs: [obj.id, protocolStr, obj.host], msg: 'Started local relay session \"' + obj.id + '\", protocol ' + protocolStr + ' to ' + obj.host, nodeid: req.query.nodeid, protocol: req.query.p };
+                if (obj.guestname) { event.guestname = obj.guestname; } // If this is a sharing session, set the guest name here.
+                parent.parent.DispatchEvent(['*', obj.user._id, obj.meshid, obj.nodeid], obj, event);
+
+                // Count the session
+                if (parent.trafficStats.localRelayCount[protocolInUse]) { parent.trafficStats.localRelayCount[protocolInUse] += 1; } else { parent.trafficStats.localRelayCount[protocolInUse] = 1; }
+
+                // Start the session
+                ws.send('c');
+                ws._socket.resume();
+            });
+            obj.client.on('data', function (data) {
+                // Perform data accounting
+                dataAccounting();
+                // Perform relay
+                try { this.pause(); ws.send(data, this.clientResume); } catch (ex) { console.log(ex); }
+            }); 
+            obj.client.on('close', function () { obj.close(); });
+            obj.client.on('error', function (err) { obj.close(); });
+            obj.client.clientResume = function () { try { obj.client.resume(); } catch (ex) { console.log(ex); } };
+        });
+    }
+
+    ws.flushSink = function () { try { ws._socket.resume(); } catch (ex) { console.log(ex); } };
+
+    // When data is received from the mesh relay web socket
+    ws.on('message', function (data) { if (typeof data != 'string') { try { ws._socket.pause(); obj.client.write(data, ws.flushSink); } catch (ex) { } } }); // Perform relay
+
+    // If error, close both sides of the relay.
+    ws.on('error', function (err) { 
+        parent.relaySessionErrorCount++; obj.close(); 
+    });
+
+    // Relay web socket is closed
+    ws.on('close', function (req) { obj.close(); });
+
+    // If this is not an authenticated session, or the session does not have routing instructions, just go ahead an connect to existing session.
+    performRelay();
+    return obj;
+};

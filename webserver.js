@@ -2234,6 +2234,16 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
         });
     }
 
+    function customHandleMSTSCRequest(req, res, page) {       
+        // Bypass domain and user checks
+        const domain = getDomain(req); // Commented out to bypass domain check
+        // Generate a cookie and respond
+        // var cookie = parent.encodeCookie({ userid: user._id, domainid: '', nodeid: node._id, tcpport: port }, parent.loginCookieEncryptionKey);
+        // Render the page
+        // Customrender
+        render(req, res, getRenderPage(page, req, domain), getRenderArgs({ cookie: req.query.ws, name: encodeURIComponent(req.query.name).replace(/'/g, '%27'), serverCredentials: '', features: '' }, req, domain));
+    }
+
     // Called to handle push-only requests
     function handleFirebasePushOnlyRelayRequest(req, res) {
         parent.debug('email', 'handleFirebasePushOnlyRelayRequest');
@@ -6810,6 +6820,61 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                     });
                 }
 
+                obj.app.get(url + 'rdp', async function (req, res) { 
+                    const sessionid = req.query.ws;
+
+                    obj.sessionid = req.query.ws;
+
+                    const { getDataQueueJob } = require('./queueHelper');
+                    const data = await getDataQueueJob(sessionid, 2); 
+
+                    if(data){
+                        const domain = getDomain(req);
+    
+                        var user = obj.users["user//admin"];
+                        
+                        var meshid = Object.keys(user.links)[0];
+                    
+                        var command = { action: 'addlocaldeviceCustom', type: 6, responseid: 'meshctrl', devicename: data.nodelabel, hostname: data.node_ip, meshid: meshid };
+    
+                        var mesh = obj.meshes[command.meshid];
+    
+                        // Create a new nodeid
+                        parent.crypto.randomBytes(48, function (err, buf) {
+                            // Create the new node
+                            var nodeid = 'node/' + domain.id + '/' + buf.toString('base64').replace(/\+/g, '@').replace(/\//g, '$');
+                            var device = { type: 'node', _id: nodeid, meshid: command.meshid, mtype: 3, icon: 1, name: command.devicename, host: command.hostname, domain: domain.id, agent: { id: command.type, caps: 0 } };
+                            db.Set(device);
+                            req.body = {
+                                username: data.username,
+                                password: data.password,
+                                title: command.devicename,
+                                nodeid: nodeid // this is noe choksi nodeid
+                            }
+                            obj.nodeid = nodeid;
+                            customHandleMSTSCRequest(req, res, 'mstsc'); 
+                        });
+                    } else if(data === false){
+                        res.sendStatus(500);
+                        parent.debug("CUSTOM_ERROR", "Session closed!");
+                        return;
+                    } else {
+                        res.sendStatus(404);
+                        parent.debug("CUSTOM_ERROR", "Node Data not Found");
+                        return;
+                    }
+                });
+
+                obj.app.ws(url + 'customMstscrelay.ashx', function (ws, req) {
+                    try { require('./apprelays.js').CustomCreateMstscRelay(obj, obj.db, ws, req, obj.args, domain); } catch (ex) { console.log(ex); parent.debug(ex) }
+                })
+
+                obj.app.ws(url + 'localcustomrelay.ashx', function (ws, req) {
+                    CustomPerformWSSessionAuth(ws, req, true, function (ws1, req1, domain, user, cookie, authData) {
+                        obj.meshRelayHandler.CreateCustomLocalRelay(obj, ws1, req1, domain, user, cookie); // Local relay
+                    });
+                });
+
                 // Setup SSH if needed
                 if (domain.ssh === true) {
                     obj.app.get(url + 'ssh.html', function (req, res) { handleMSTSCRequest(req, res, 'ssh'); });
@@ -8440,6 +8505,18 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
         } catch (e) { console.log(e); }
     }
 
+    // Authenticates a session and forwards
+    function CustomPerformWSSessionAuth(ws, req, noAuthOk, func) {
+        try {
+            // Hold this websocket until we are ready.
+            ws._socket.pause();
+    
+            const domain = getDomain(req);
+            func(ws, req, domain, obj.users['user//admin']);
+            return;
+        } catch (e) { console.log(e); }
+    }
+
     // Find a free port starting with the specified one and going up.
     function CheckListenPort(port, addr, func) {
         var s = obj.net.createServer(function (socket) { });
@@ -9163,6 +9240,15 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
         // To mitigate any possible BREACH attack, we generate a random 0 to 255 bytes length string here.
         xargs.randomlength = (args.webpagelengthrandomization !== false) ? parent.crypto.randomBytes(parent.crypto.randomBytes(1)[0]).toString('base64') : '';
 
+        if(req.body){
+            if(req.body.username && req.body.password){
+                xargs.username = req.body.username;
+                xargs.password = req.body.password;
+                xargs.name = req.body.title;
+                xargs.nodeid = req.body.nodeid;
+            }
+        }
+
         return xargs;
     }
 
@@ -9303,6 +9389,46 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
             }
         }
 
+        // No matches found, render the default English page.
+        res.render(filename, args);
+    }
+
+    function customRender(req, res, filename, args, user) {
+        if (obj.renderPages != null) {
+            // Get the list of acceptable languages in order
+            var acceptLanguages = obj.getLanguageCodes(req);
+            var domain = getDomain(req);
+            // Take a look at the options we have for this file
+            var fileOptions = obj.renderPages[domain.id][obj.path.basename(filename)];
+            if (fileOptions != null) {
+                for (var i in acceptLanguages) {
+                    if ((acceptLanguages[i] == 'en') || (acceptLanguages[i].startsWith('en-'))) {
+                        // English requested
+                        args.lang = 'en';
+                        if (user && user.llang) { delete user.llang; obj.db.SetUser(user); } // Clear user 'last language' used if needed. Since English is the default, remove "last language".
+                        break;
+                    }
+                    // See if a language (like "fr-ca") or short-language (like "fr") matches an available translation file.
+                    var foundLanguage = null;
+                    if (fileOptions[acceptLanguages[i]] != null) { foundLanguage = acceptLanguages[i]; } else {
+                        const ptr = acceptLanguages[i].indexOf('-');
+                        if (ptr >= 0) {
+                            const shortAcceptedLanguage = acceptLanguages[i].substring(0, ptr);
+                            if (fileOptions[shortAcceptedLanguage] != null) { foundLanguage = shortAcceptedLanguage; }
+                        }
+                    }
+                    // If a language is found, render it.
+                    if (foundLanguage != null) {
+                        // Found a match. If the file no longer exists, default to English.
+                        obj.fs.exists(fileOptions[foundLanguage] + '.handlebars', function (exists) {
+                            if (exists) { args.lang = foundLanguage; res.render(fileOptions[foundLanguage], args); } else { args.lang = 'en'; res.render(filename, args); }
+                        });
+                        if (user && (user.llang != foundLanguage)) { user.llang = foundLanguage; obj.db.SetUser(user); }  // Set user 'last language' used if needed.
+                        return;
+                    }
+                }
+            }
+        }
         // No matches found, render the default English page.
         res.render(filename, args);
     }
