@@ -6823,11 +6823,11 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                             customHandleMSTSCRequest(req, res, 'mstsc'); 
                         });
                     } else if(data === false){
-                        res.sendStatus(500);
+                        res.end("RDP Session Closed!");
                         parent.debug("CUSTOM_ERROR", "Session closed!");
                         return;
                     } else {
-                        res.sendStatus(404);
+                        res.end("Something Wen Wrong!");
                         parent.debug("CUSTOM_ERROR", "Node Data not Found");
                         return;
                     }
