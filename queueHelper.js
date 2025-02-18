@@ -6,7 +6,7 @@ const Queue = require('bull');
 async function publishQueueJob(sessionId, status) {
     // Connect to Redis
     const myQueue = new Queue('CommunicationQueue', {
-        redis: { host: '127.0.0.1', port: 6380 } // Adjust Redis connection settings as needed
+        redis: { host: '127.0.0.1', port: 6379 } // Adjust Redis connection settings as needed
     });
     if(sessionId && status){
         await myQueue.add("Update_Session_Status", { session_id: sessionId, status: status });
@@ -19,7 +19,7 @@ async function publishQueueJob(sessionId, status) {
 async function getDataQueueJob(sessionid) {
     // Connect to Redis
     const myQueue = new Queue('CommunicationQueue', {
-        redis: { host: '127.0.0.1', port: 6380 } // Adjust Redis connection settings as needed
+        redis: { host: '127.0.0.1', port: 6379 } // Adjust Redis connection settings as needed
     });
     const job = await myQueue.add("Get_Session_Details", sessionid);
     const data = await job.finished();
