@@ -115,22 +115,6 @@
             }, 2000)
         }
 
-{{!-- 
-        function connect(domain, username, password) {
-            if (cookie == '') return;
-            var domain = Q('inputDomain').value;
-            var username = Q('inputUsername').value;
-            var password = Q('inputPassword').value;
-            var savepass = Q('inputSaveCredentials').checked;
-            var options = { savepass: savepass, useServerCreds: (Q('d3coreMode').value == 1) };
-            QV('myCanvas', true);
-            QV('main', false);
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            client.connect(cookie, domain, username, password, options, function (err) { QV('myCanvas', false); QV('main', true); });
-            return false;
-        }  --}}
-
         function connect(domain, username, password) {
             if (cookie == '') return;
             var domain = '';

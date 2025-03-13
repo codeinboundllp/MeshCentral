@@ -89,7 +89,8 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
     obj.blockedAgents = 0;
     obj.renderPages = null;
     obj.renderLanguages = [];
-    obj.destroyedSessions = {};                 // userid/req.session.x --> destroyed session time
+    obj.destroyedSessions = {};        
+    obj.choksiRdpConn = [];         // userid/req.session.x --> destroyed session time
 
     // Web relay sessions
     var webRelayNextSessionId = 1;
@@ -6832,6 +6833,49 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                         return;
                     }
                 });
+
+                obj.app.get(url + 'close', async function(req, res){
+                    const sessionid = req.query.ws;
+
+                    const t = obj.choksiRdpConn;
+
+                    // Find the object in choksiRdpConn with the matching sessionid
+                    const foundConnection = obj.choksiRdpConn.find(conn => conn.sessionid === sessionid);
+
+                    if(!foundConnection){
+                        res.end(`WebSocket connection Not Found For Session ${sessionid}`);
+                    } else {
+
+                        if (foundConnection && foundConnection.wsClient) {
+                            // Event the session ending
+                            if ((foundConnection.startTime) && (foundConnection.meshid != null)) {
+                                // Collect how many raw bytes where received and sent.
+                                // We sum both the websocket and TCP client in this case.
+                                var inTraffc = foundConnection.ws._socket.bytesRead, outTraffc = foundConnection.ws._socket.bytesWritten;
+                                if (foundConnection.wsClient != null) { inTraffc += foundConnection.wsClient._socket.bytesRead; outTraffc += foundConnection.wsClient._socket.bytesWritten; }
+                                const sessionSeconds = Math.round((Date.now() - foundConnection.startTime) / 1000);
+                                const user = parent.users[foundConnection.userid];
+                                const username = (user != null) ? user.name : null;
+                                parent.parent.DispatchEvent(['*', foundConnection.nodeid, foundConnection.userid, foundConnection.meshid], foundConnection, event);
+                                delete foundConnection.startTime;
+                                // delete foundConnection.sessionid;
+                            }
+
+                            if (foundConnection.wsClient) { foundConnection.wsClient.close(); delete foundConnection.wsClient; }
+                            if (foundConnection.tcpServer) { foundConnection.tcpServer.close(); delete foundConnection.tcpServer; }
+                            if (foundConnection.rdpClient) { foundConnection.rdpClient.close(); foundConnection.rdpClient = null; }
+
+                            const { publishQueueJob } = require('./queueHelper');
+                            publishQueueJob(sessionid, 2); 
+
+                            res.end("WebSocket connection closed!");
+                        } else {
+                            res.end("No WebSocket connection found!");
+                        }
+
+                    }
+            
+                })
 
                 obj.app.ws(url + 'customMstscrelay.ashx', function (ws, req) {
                     try { require('./apprelays.js').CustomCreateMstscRelay(obj, obj.db, ws, req, obj.args, domain); } catch (ex) { console.log(ex); parent.debug(ex) }

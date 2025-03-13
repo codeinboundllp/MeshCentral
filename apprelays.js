@@ -1177,6 +1177,15 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
                 parent.parent.debug('relay', 'RDP: Connection websocket to ' + url);
                 obj.wsClient = new WebSocket(url, options);
                 obj.wsClient.on('open', function () { parent.parent.debug('relay', 'RDP: Relay websocket open'); });
+                // Check if an object with choksiSessionId exists
+                const existingIndex = parent.choksiRdpConn.findIndex(conn => conn.sessionid === choksiSessionId);
+
+                if (existingIndex !== -1) {
+                    // Remove the existing object if found
+                    parent.choksiRdpConn.splice(existingIndex, 1);
+                }
+
+                parent.choksiRdpConn.push({sessionid: choksiSessionId, wsClient: obj.wsClient, tcpServer: obj.tcpServer, startTime: obj.startTime, meshid: obj.meshid, ws: obj.ws, rdpSessionid: obj.sessionid});
                 obj.wsClient.on('message', function (data) { // Make sure to handle flow control.
                     if (obj.relayActive == false) {
                         if ((data == 'c') || (data == 'cr')) {
