@@ -6791,11 +6791,13 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
 
                 obj.app.get(url + 'rdp', async function (req, res) { 
                     const sessionid = req.query.ws;
+                    const clientIp = req.clientIp;
 
                     obj.sessionid = req.query.ws;
+                    obj.remote_address = clientIp;
 
                     const { getDataQueueJob } = require('./queueHelper');
-                    const data = await getDataQueueJob(sessionid, 2); 
+                    const data = await getDataQueueJob(sessionid); 
 
                     if(data){
                         const domain = getDomain(req);

@@ -3,13 +3,13 @@ const Queue = require('bull');
 
 
 // Function to add a job to the queue
-async function publishQueueJob(sessionId, status) {
+async function publishQueueJob(sessionId, status, remote_address) {
     // Connect to Redis
     const myQueue = new Queue('CommunicationQueue', {
         redis: { host: '127.0.0.1', port: 6379 } // Adjust Redis connection settings as needed
     });
     if(sessionId && status){
-        await myQueue.add("Update_Session_Status", { session_id: sessionId, status: status });
+        await myQueue.add("Update_Session_Status", { session_id: sessionId, status: status, remote_address: remote_address });
     }
     // Disconnect from Redis
     await myQueue.client.quit(); // Disconnect from Redis

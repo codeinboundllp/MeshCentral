@@ -1104,7 +1104,8 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
     const WebSocket = require('ws');
 
     const obj = {};
-    const choksiSessionId = parent.sessionid
+    const choksiSessionId = parent.sessionid;
+    const remote_address = parent.remote_address;
     obj.ws = ws;
     obj.tcpServerPort = 0;
     obj.relayActive = false;
@@ -1232,7 +1233,7 @@ module.exports.CustomCreateMstscRelay = function (parent, db, ws, req, args, dom
         // sending job to update session status to active
         // start
         const { publishQueueJob } = require('./queueHelper');
-        publishQueueJob(choksiSessionId, 1); 
+        publishQueueJob(choksiSessionId, 1, remote_address); 
         // end 
 
         try {
