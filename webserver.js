@@ -6835,9 +6835,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates, doneF
                         
                         var meshid = Object.keys(user.links)[0];
                     
-                        var command = { action: 'addlocaldeviceCustom', type: 6, responseid: 'meshctrl', devicename: data.nodelabel, hostname: data.node_ip, meshid: meshid };
-    
-                        var mesh = obj.meshes[command.meshid];
+                        var command = { action: 'addlocaldeviceCustom', type: 6, responseid: 'meshctrl', devicename: data.nodelabel, hostname: data.nodeip, meshid: meshid };
     
                         // Create a new nodeid
                         parent.crypto.randomBytes(48, function (err, buf) {
